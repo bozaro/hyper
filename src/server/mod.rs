@@ -452,13 +452,11 @@ impl<F> Handler for F where F: Fn(Request, Response<Fresh>), F: Sync + Send {
 
 #[cfg(test)]
 mod tests {
-    use header::Headers;
-    use method::Method;
     use mock::MockStream;
     use status::StatusCode;
-    use uri::RequestUri;
 
-    use super::{Request, Response, Fresh, Handler, Worker};
+    use super::{Request, Response, Fresh, Worker};
+    use std::io::Read;
 
     #[test]
     fn test_check_continue_default() {
@@ -471,7 +469,9 @@ mod tests {
             1234567890\
         ");
 
-        fn handle(_: Request, res: Response<Fresh>) {
+        fn handle(mut req: Request, res: Response<Fresh>) {
+            let mut data = Vec::new();
+            req.read_to_end(&mut data).unwrap();
             res.start().unwrap().end().unwrap();
         }
 
@@ -484,17 +484,6 @@ mod tests {
 
     #[test]
     fn test_check_continue_reject() {
-        struct Reject;
-        impl Handler for Reject {
-            fn handle<'a, 'k>(&'a self, _: Request<'a, 'k>, res: Response<'a, Fresh>) {
-                res.start().unwrap().end().unwrap();
-            }
-
-            fn check_continue(&self, _: (&Method, &RequestUri, &Headers)) -> StatusCode {
-                StatusCode::ExpectationFailed
-            }
-        }
-
         let mut mock = MockStream::with_input(b"\
             POST /upload HTTP/1.1\r\n\
             Host: example.domain\r\n\
@@ -504,7 +493,13 @@ mod tests {
             1234567890\
         ");
 
-        Worker::new(Reject, Default::default()).handle_connection(&mut mock);
-        assert_eq!(mock.write, &b"HTTP/1.1 417 Expectation Failed\r\n\r\n"[..]);
+        fn handle(_: Request, mut res: Response<Fresh>) {
+            *res.status_mut() = StatusCode::ExpectationFailed;
+            res.start().unwrap().end().unwrap();
+        }
+
+        Worker::new(handle, Default::default()).handle_connection(&mut mock);
+        let res = b"HTTP/1.1 417 Expectation Failed\r\n";
+        assert_eq!(&mock.write[..res.len()], &res[..]);
     }
 }
